@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: line-bot-multilang-ocr
+    runtime: docker
+    instance_type: nano   # free tier — 256MB RAM
+    ports:
+      - port: 8080
+        protocol: http
+    health_checks:
+      - path: /
+        port: 8080
+    env:
+      - key: PORT
+        value: "8080"
+      # LINE Bot credentials
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        secret: true
+      - key: LINE_CHANNEL_SECRET
+        secret: true
+      # Cloudinary
+      - key: CLOUDINARY_NAME
+        secret: true
+      - key: CLOUDINARY_API_KEY
+        secret: true
+      - key: CLOUDINARY_API_SECRET
+        secret: true
+      # Google Cloud — paste JSON 1 dòng (minified)
+      - key: GOOGLE_CREDENTIALS_JSON
+        secret: true
+      - key: GOOGLE_CLOUD_PROJECT_ID
+        value: linebot-490113

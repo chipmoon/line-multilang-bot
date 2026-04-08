@@ -1,0 +1,9 @@
+flask
+gunicorn
+line-bot-sdk>=3.0.0
+google-cloud-vision
+pypinyin
+cloudinary
+python-dotenv
+google-cloud-texttospeech
+google-cloud-translate
