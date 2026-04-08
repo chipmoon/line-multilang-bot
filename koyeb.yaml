@@ -2,7 +2,7 @@ services:
   - type: web
     name: line-bot-multilang-ocr
     runtime: docker
-    instance_type: nano   # free tier — 256MB RAM
+    instance_type: free    # free tier — 512MB RAM
     ports:
       - port: 8080
         protocol: http
