@@ -1,23 +1,28 @@
 # Sử dụng Python bản nhẹ
 FROM python:3.9-slim
 
-# Thiết lập thư mục làm việc
-WORKDIR /app
+# Yêu cầu của Hugging Face: Chạy với user có UID 1000
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
+WORKDIR $HOME/app
 
 # Copy requirements trước để tận dụng Docker layer cache
-COPY requirements.txt .
+COPY --chown=user requirements.txt .
 
 # Cài đặt các thư viện cần thiết
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Copy phần còn lại của code
-COPY . .
+# Copy phần còn lại của code với quyền của user
+COPY --chown=user . .
 
-# Tạo thư mục static nếu chưa có
+# Tạo thư mục static và đảm bảo quyền ghi
 RUN mkdir -p static
 
-# Cổng mặc định của Render/Cloud Run là 8080
-ENV PORT=8080
+# Hugging Face mặc định dùng cổng 7860
+ENV PORT=7860
 
-# Chạy ứng dụng với gunicorn (production-ready)
+# Chạy ứng dụng với gunicorn
 CMD gunicorn --workers=1 --threads=4 --timeout=120 --bind=0.0.0.0:$PORT app:app
