@@ -2,6 +2,7 @@ import os
 import json
 import re
 import tempfile
+import traceback
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -335,7 +336,9 @@ def handle_image(event):
             )
 
         except Exception as e:
-            print(f"Critical Error: {e}")
+            # In toàn bộ chi tiết lỗi vào Logs của Hugging Face để debug
+            print(f"❌ Critical Error: {e}")
+            traceback.print_exc()
             line_bot_messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,

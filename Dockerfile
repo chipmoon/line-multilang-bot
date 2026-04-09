@@ -1,5 +1,5 @@
 # Sử dụng Python bản nhẹ
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 # Yêu cầu của Hugging Face: Chạy với user có UID 1000
 RUN useradd -m -u 1000 user
