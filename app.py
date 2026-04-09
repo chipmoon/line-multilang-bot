@@ -27,6 +27,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Tạo thư mục static ngay khi import (cần thiết khi chạy bằng gunicorn)
+os.makedirs('static', exist_ok=True)
+
 # --- CONFIGURATION ---
 channel_access_token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.getenv('LINE_CHANNEL_SECRET')
