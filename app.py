@@ -216,6 +216,20 @@ def health_check():
 def callback():
     signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
+    
+    # In ra ID để người dùng có thể tra cứu trong Logs
+    import json
+    try:
+        data = json.loads(body)
+        for event in data.get('events', []):
+            source = event.get('source', {})
+            u_id = source.get('userId')
+            g_id = source.get('groupId')
+            if u_id: print(f"🔍 [LINE LOG] User ID: {u_id}")
+            if g_id: print(f"🔍 [LINE LOG] Group ID: {g_id}")
+    except:
+        pass
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
