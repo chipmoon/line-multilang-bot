@@ -225,8 +225,8 @@ def callback():
             source = event.get('source', {})
             u_id = source.get('userId')
             g_id = source.get('groupId')
-            if u_id: print(f"🔍 [LINE LOG] User ID: {u_id}")
-            if g_id: print(f"🔍 [LINE LOG] Group ID: {g_id}")
+            if u_id: print(f"🔍 [LINE LOG] User ID: {u_id}", flush=True)
+            if g_id: print(f"🔍 [LINE LOG] Group ID: {g_id}", flush=True)
     except:
         pass
 
