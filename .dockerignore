@@ -1,0 +1,14 @@
+venv/
+venv_314_bak/
+.env
+__pycache__/
+*.pyc
+static/*.jpg
+static/*.mp3
+.git/
+.vscode/
+learning_cache.json
+# Bảo mật: KHÔNG đưa credentials vào Docker image
+credentials.json
+*.json.sig
+linebot-*.json

@@ -1,0 +1,20 @@
+name: Sync to Hugging Face space
+on:
+  push:
+    branches: [main]
+
+  # Bổ sung tính năng chạy bằng tay từ tab Actions của GitHub
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: git push --force https://chiptool:$HF_TOKEN@huggingface.co/spaces/chipHF/line-multilang-ocr main

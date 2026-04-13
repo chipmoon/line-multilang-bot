@@ -1,0 +1,12 @@
+.env
+credentials.json
+linebot-*.json
+venv/
+venv_314_bak/
+__pycache__/
+*.pyc
+learning_cache.json
+static/*.jpg
+static/*.mp3
+*.log
+.DS_Store
