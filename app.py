@@ -179,7 +179,8 @@ def extract_structured_text(annotation):
 def detect_and_format_poem(text):
     """
     Detect classical Chinese poetry (五言/七言) and auto-format.
-    Returns original text if no pattern matches.
+    Safety checks: skip if OCR data looks corrupted (adjacent duplicates).
+    Returns original text if no confident pattern match.
     """
     if not text:
         return text
@@ -190,8 +191,14 @@ def detect_and_format_poem(text):
     if total < 12 or total > 120:
         return text
 
+    # Safety: adjacent duplicate chars = OCR read columns incorrectly
+    adj_dupes = sum(1 for i in range(1, len(han_chars)) if han_chars[i] == han_chars[i-1])
+    if adj_dupes > 0:
+        print(f"--- [POEM SKIP] {adj_dupes} adjacent duplicate(s) detected → OCR noise ---")
+        return text
+
     best = None
-    for title_len in range(1, 8):
+    for title_len in range(2, 6):  # Title must be 2-5 chars (no single-char)
         body = total - title_len
         if body <= 0:
             continue
@@ -199,21 +206,18 @@ def detect_and_format_poem(text):
             if body % cpl != 0:
                 continue
             num_lines = body // cpl
-            if num_lines not in (2, 4, 6, 8):
+            if num_lines not in (4, 8):  # Only 絕句(4) and 律詩(8)
                 continue
             score = 0
             if num_lines == 4: score += 10
             elif num_lines == 8: score += 7
-            elif num_lines == 2: score += 3
-            else: score += 5
             if 2 <= title_len <= 4: score += 5
-            elif title_len == 1: score += 1
             if cpl == 5: score += 1
             if best is None or score > best['score']:
                 best = {'score': score, 'title_len': title_len,
                         'cpl': cpl, 'num_lines': num_lines}
 
-    if not best or best['score'] < 10:
+    if not best or best['score'] < 14:  # High threshold: need 4-line + good title
         return text
 
     tl, cpl, nl = best['title_len'], best['cpl'], best['num_lines']
@@ -248,7 +252,10 @@ def get_ocr_details(image_path):
         content = image_file.read()
     image = vision.Image(content=content)
 
-    response = client.document_text_detection(image=image)
+    # B+ Enhancement: language hints help Vision API prioritize
+    # Traditional Chinese over Bopomofo annotations
+    image_context = vision.ImageContext(language_hints=['zh-Hant'])
+    response = client.document_text_detection(image=image, image_context=image_context)
 
     if response.error.message:
         raise Exception(f"Vision API Error: {response.error.message}")
