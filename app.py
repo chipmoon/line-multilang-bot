@@ -104,6 +104,130 @@ def clean_ocr_text(text, lang_code):
     # Non-Chinese (English/etc): Keep original but trim
     return text.strip()
 
+# --- B+ STRUCTURED OCR MODULE ---
+
+def is_bopomofo(char):
+    """Check if character is Bopomofo (注音符號) or tone mark."""
+    cp = ord(char)
+    if 0x3100 <= cp <= 0x312F or 0x31A0 <= cp <= 0x31BF:
+        return True
+    if cp in (0x02D9, 0x02CA, 0x02C7, 0x02CB):  # ˙ˊˇˋ
+        return True
+    return False
+
+def is_han_char(char):
+    """Check if character is CJK Unified Ideograph."""
+    cp = ord(char)
+    return (0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF)
+
+def extract_structured_text(annotation):
+    """
+    B+ OCR: Parse full_text_annotation by block/paragraph.
+    Filters Bopomofo at symbol level, detects vertical/horizontal layout.
+    """
+    if not annotation or not annotation.pages:
+        return ""
+
+    KEEP_CHARS = set("，。！？、：；\"\"（）《》【】 ")
+    blocks_data = []
+
+    for page in annotation.pages:
+        for block in page.blocks:
+            vertices = block.bounding_box.vertices if block.bounding_box else []
+            if vertices:
+                xs = [v.x for v in vertices]
+                ys = [v.y for v in vertices]
+                cx, cy = sum(xs) / 4, sum(ys) / 4
+                w, h = max(xs) - min(xs), max(ys) - min(ys)
+            else:
+                cx, cy, w, h = 0, 0, 0, 0
+
+            para_texts = []
+            for paragraph in block.paragraphs:
+                chars = []
+                for word in paragraph.words:
+                    for symbol in word.symbols:
+                        c = symbol.text
+                        if is_bopomofo(c):
+                            continue
+                        if is_han_char(c) or c in KEEP_CHARS or c.isdigit():
+                            chars.append(c)
+                para_text = "".join(chars).strip()
+                if para_text:
+                    para_texts.append(para_text)
+
+            if para_texts:
+                blocks_data.append({
+                    'cx': cx, 'cy': cy, 'w': w, 'h': h,
+                    'text': "\n".join(para_texts)
+                })
+
+    if not blocks_data:
+        return ""
+
+    # Vertical text: columns taller than wide → sort right-to-left
+    if len(blocks_data) >= 2:
+        vert = sum(1 for b in blocks_data if b['h'] > b['w'] * 1.5)
+        if vert > len(blocks_data) / 2:
+            blocks_data.sort(key=lambda b: b['cx'], reverse=True)
+            print("--- [B+] Vertical text detected, sorting R→L ---")
+        else:
+            blocks_data.sort(key=lambda b: b['cy'])
+
+    return "\n".join(b['text'] for b in blocks_data)
+
+def detect_and_format_poem(text):
+    """
+    Detect classical Chinese poetry (五言/七言) and auto-format.
+    Returns original text if no pattern matches.
+    """
+    if not text:
+        return text
+
+    han_chars = [c for c in text if is_han_char(c)]
+    total = len(han_chars)
+
+    if total < 12 or total > 120:
+        return text
+
+    best = None
+    for title_len in range(1, 8):
+        body = total - title_len
+        if body <= 0:
+            continue
+        for cpl in (5, 7):  # chars per line
+            if body % cpl != 0:
+                continue
+            num_lines = body // cpl
+            if num_lines not in (2, 4, 6, 8):
+                continue
+            score = 0
+            if num_lines == 4: score += 10
+            elif num_lines == 8: score += 7
+            elif num_lines == 2: score += 3
+            else: score += 5
+            if 2 <= title_len <= 4: score += 5
+            elif title_len == 1: score += 1
+            if cpl == 5: score += 1
+            if best is None or score > best['score']:
+                best = {'score': score, 'title_len': title_len,
+                        'cpl': cpl, 'num_lines': num_lines}
+
+    if not best or best['score'] < 10:
+        return text
+
+    tl, cpl, nl = best['title_len'], best['cpl'], best['num_lines']
+    title = "".join(han_chars[:tl])
+    lines = [title]
+    for i in range(nl):
+        line = "".join(han_chars[tl + i * cpl : tl + (i + 1) * cpl])
+        line += "，" if i % 2 == 0 else "。"
+        lines.append(line)
+
+    formatted = "\n".join(lines)
+    print(f"--- [POEM DETECTED] {cpl}-char, {nl} lines, title='{title}' ---")
+    return formatted
+
 def translate_text(text, target_lang='vi'):
     """
     Expert Translation: Uses Google Cloud Translation Basic (v2).
@@ -115,37 +239,44 @@ def translate_text(text, target_lang='vi'):
 
 def get_ocr_details(image_path):
     """
-    Expert OCR: Uses Google Cloud Vision Document Text Detection.
-    Optimized for high-density and multi-language characters like Chinese.
+    Expert OCR (B+ Enhanced):
+    - Chinese: Structured block/paragraph parsing + Bopomofo filter + poem detection
+    - Other languages: Standard document_text_detection with clean_ocr_text
     """
     client = vision.ImageAnnotatorClient()
     with open(image_path, 'rb') as image_file:
         content = image_file.read()
     image = vision.Image(content=content)
-    
-    # Advanced: Document Text Detection is superior for symbols and dense characters
+
     response = client.document_text_detection(image=image)
-    
+
     if response.error.message:
         raise Exception(f"Vision API Error: {response.error.message}")
 
-    full_text = response.full_text_annotation.text if response.full_text_annotation else ""
-    
     # Smart Language Detection
-    lang_code = 'zh-CN' # Default for this project
+    lang_code = 'zh-CN'
     if response.full_text_annotation and response.full_text_annotation.pages:
         page = response.full_text_annotation.pages[0]
-        if page.property.detected_languages:
-            # Sort by confidence if available
+        if page.property and page.property.detected_languages:
             lang_code = page.property.detected_languages[0].language_code
 
-    print(f"--- [EXPERT OCR] ---")
-    print(f"Text: {full_text[:50]}...")
+    is_chinese = lang_code and (
+        lang_code.lower().startswith('zh') or lang_code.lower().startswith('cmn')
+    )
+
+    if is_chinese and response.full_text_annotation:
+        # B+ Path: structured extraction → poem formatting
+        structured_text = extract_structured_text(response.full_text_annotation)
+        final_text = detect_and_format_poem(structured_text)
+        print(f"--- [EXPERT OCR B+] ---")
+        print(f"Structured: {repr(structured_text[:100])}")
+        print(f"Final: {repr(final_text[:100])}")
+    else:
+        # Original path for non-Chinese
+        raw = response.full_text_annotation.text if response.full_text_annotation else ""
+        final_text = clean_ocr_text(raw, lang_code)
+
     print(f"Detected Lang: {lang_code}")
-    
-    # Clean the text if it's Chinese to remove Bopomofo noise
-    final_text = clean_ocr_text(full_text, lang_code)
-    
     return final_text.strip(), lang_code
 
 def get_voice_params(lang_code):
