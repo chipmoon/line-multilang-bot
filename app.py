@@ -271,6 +271,15 @@ def get_ocr_details(image_path):
         lang_code.lower().startswith('zh') or lang_code.lower().startswith('cmn')
     )
 
+    # Fallback: detect Chinese from actual content if lang_code missed it
+    if not is_chinese and response.full_text_annotation:
+        raw_text = response.full_text_annotation.text or ""
+        han_count = sum(1 for c in raw_text if is_han_char(c))
+        if han_count >= 3:
+            is_chinese = True
+            lang_code = 'zh-TW'
+            print(f"--- [B+ FALLBACK] {han_count} Han chars found, forcing Chinese path ---")
+
     if is_chinese and response.full_text_annotation:
         # B+ Path: structured extraction → poem formatting
         structured_text = extract_structured_text(response.full_text_annotation)
@@ -422,7 +431,15 @@ def handle_image(event):
 
             # Step 3: Bopomofo and Pinyin (Speed Optimization)
             is_chinese = lang_code and (lang_code.startswith('zh') or lang_code.startswith('cmn'))
+            is_japanese = lang_code and lang_code.startswith('ja')
             is_english = lang_code and lang_code.startswith('en')
+            
+            # Fallback: check actual text content for Chinese characters
+            if not is_chinese and not is_japanese:
+                han_count = sum(1 for c in detected_text if is_han_char(c))
+                if han_count >= 3:
+                    is_chinese = True
+                    print(f"--- [HANDLER FALLBACK] {han_count} Han chars in text, enabling Chinese mode ---")
             
             pinyin_info = ""
             zhuyin_info = ""
@@ -444,9 +461,15 @@ def handle_image(event):
                 # Setup Translation Tasks
                 vi_future = None
                 en_future = None
+                zh_future = None
                 
                 if is_chinese:
                     # Parallel ZH -> EN and ZH -> VI
+                    en_future = executor.submit(translate_text, detected_text, 'en')
+                    vi_future = executor.submit(translate_text, detected_text, 'vi')
+                elif is_japanese:
+                    # Parallel JA -> ZH-CN, JA -> EN, JA -> VI
+                    zh_future = executor.submit(translate_text, detected_text, 'zh-CN')
                     en_future = executor.submit(translate_text, detected_text, 'en')
                     vi_future = executor.submit(translate_text, detected_text, 'vi')
                 elif lang_code and not lang_code.startswith('vi'):
@@ -461,9 +484,13 @@ def handle_image(event):
                     en_text = en_future.result() if en_future else ""
                     vi_text = vi_future.result() if vi_future else ""
                     translation_info = f"\n🇬🇧 EN: {en_text}\n🇻🇳 Tiếng Việt: {vi_text}"
+                elif is_japanese:
+                    zh_text = zh_future.result() if zh_future else ""
+                    en_text = en_future.result() if en_future else ""
+                    vi_text = vi_future.result() if vi_future else ""
+                    translation_info = f"\n🇨🇳 中文: {zh_text}\n🇬🇧 EN: {en_text}\n🇻🇳 Tiếng Việt: {vi_text}"
                 elif vi_future:
                     vi_text = vi_future.result()
-                    # Only show if translation actually changed something or it's English
                     if vi_text != detected_text or is_english:
                         translation_info = f"\n🇻🇳 Tiếng Việt: {vi_text}"
 
