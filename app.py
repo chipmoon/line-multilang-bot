@@ -15,8 +15,9 @@ from linebot.v3.messaging import (
     TextMessage,
     AudioMessage
 )
-from linebot.v3.webhooks import MessageEvent, ImageMessageContent
-from google.cloud import vision, texttospeech, translate_v2 as translate
+from linebot.v3.webhooks import MessageEvent, ImageMessageContent, AudioMessageContent
+from google.cloud import vision, texttospeech, translate_v2 as translate, speech
+from pydub import AudioSegment
 from pypinyin import pinyin, Style
 import cloudinary
 import cloudinary.uploader
@@ -352,6 +353,57 @@ def text_to_speech_url(text, lang, file_id):
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
+def speech_to_text(audio_path):
+    """
+    Convert audio file to text using Google Cloud Speech-to-Text.
+    Supports auto language detection for zh, ja, en.
+    LINE sends M4A → convert to FLAC for STT.
+    """
+    # Convert M4A to FLAC (Google STT preferred format)
+    flac_path = audio_path.replace('.m4a', '.flac')
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        audio = audio.set_channels(1)  # Mono for better recognition
+        audio.export(flac_path, format='flac')
+    except Exception as e:
+        print(f"Audio conversion error: {e}")
+        raise
+
+    client = speech.SpeechClient()
+    with open(flac_path, 'rb') as f:
+        content = f.read()
+
+    audio_data = speech.RecognitionAudio(content=content)
+
+    # Multi-language recognition: primary zh-TW, alternatives ja, en
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.FLAC,
+        language_code='zh-TW',
+        alternative_language_codes=['ja-JP', 'en-US', 'cmn-Hant-TW'],
+        enable_automatic_punctuation=True,
+    )
+
+    try:
+        response = client.recognize(config=config, audio=audio_data)
+    finally:
+        if os.path.exists(flac_path):
+            os.remove(flac_path)
+
+    if not response.results:
+        return "", "zh-TW"
+
+    result = response.results[0]
+    transcript = result.alternatives[0].transcript
+    confidence = result.alternatives[0].confidence
+
+    # Detect language from result
+    detected_lang = 'zh-TW'
+    if hasattr(result, 'language_code') and result.language_code:
+        detected_lang = result.language_code
+
+    print(f"--- [STT] text='{transcript}' lang={detected_lang} conf={confidence:.2f} ---")
+    return transcript.strip(), detected_lang
+
 # --- WEBHOOK ENDPOINT (v3) ---
 
 @app.route("/", methods=['GET'])
@@ -527,6 +579,121 @@ def handle_image(event):
         finally:
             if os.path.exists(temp_img):
                 os.remove(temp_img)
+
+@handler.add(MessageEvent, message=AudioMessageContent)
+def handle_audio(event):
+    """Handle voice messages: STT → translate → TTS reply."""
+    with ApiClient(configuration) as api_client:
+        line_bot_blob_api = MessagingApiBlob(api_client)
+        line_bot_messaging_api = MessagingApi(api_client)
+
+        # Step 1: Download audio
+        message_content = line_bot_blob_api.get_message_content(event.message.id)
+        temp_audio = f"static/{event.message.id}.m4a"
+        with open(temp_audio, 'wb') as f:
+            f.write(message_content)
+
+        try:
+            # Step 2: Speech-to-Text
+            detected_text, lang_code = speech_to_text(temp_audio)
+
+            if not detected_text:
+                line_bot_messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="🎙️ Bé ơi, nói rõ hơn chút nhé! Bot không nghe ra.")]
+                    )
+                )
+                return
+
+            # Step 3: Language detection & processing
+            is_chinese = lang_code and (
+                lang_code.lower().startswith('zh') or lang_code.lower().startswith('cmn')
+            )
+            is_japanese = lang_code and lang_code.lower().startswith('ja')
+            is_english = lang_code and lang_code.lower().startswith('en')
+
+            # Fallback: check content
+            if not is_chinese and not is_japanese and not is_english:
+                han_count = sum(1 for c in detected_text if is_han_char(c))
+                if han_count >= 2:
+                    is_chinese = True
+                    lang_code = 'zh-TW'
+
+            # Step 4: Pinyin/Bopomofo for Chinese
+            pinyin_info = ""
+            zhuyin_info = ""
+            if is_chinese:
+                zhuyin_list = pinyin(detected_text, style=Style.BOPOMOFO)
+                zhuyin_str = " ".join([z[0] for z in zhuyin_list])
+                zhuyin_info = f"\nĐánh vần (Bopomofo): {zhuyin_str}"
+
+                pinyin_list = pinyin(detected_text, style=Style.TONE)
+                pinyin_str = " ".join([p[0] for p in pinyin_list])
+                pinyin_info = f"\nPhiên âm (Pinyin): {pinyin_str}"
+
+            # Step 5: Parallel TTS + Translation
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                tts_future = executor.submit(
+                    text_to_speech_url, detected_text, lang_code, f"voice_{event.message.id}"
+                )
+
+                vi_future = None
+                en_future = None
+                zh_future = None
+
+                if is_chinese:
+                    en_future = executor.submit(translate_text, detected_text, 'en')
+                    vi_future = executor.submit(translate_text, detected_text, 'vi')
+                elif is_japanese:
+                    zh_future = executor.submit(translate_text, detected_text, 'zh-CN')
+                    en_future = executor.submit(translate_text, detected_text, 'en')
+                    vi_future = executor.submit(translate_text, detected_text, 'vi')
+                elif not lang_code.startswith('vi'):
+                    vi_future = executor.submit(translate_text, detected_text, 'vi')
+
+                audio_url, voice_used = tts_future.result()
+
+                translation_info = ""
+                if is_chinese:
+                    en_text = en_future.result() if en_future else ""
+                    vi_text = vi_future.result() if vi_future else ""
+                    translation_info = f"\n🇬🇧 EN: {en_text}\n🇻🇳 Tiếng Việt: {vi_text}"
+                elif is_japanese:
+                    zh_text = zh_future.result() if zh_future else ""
+                    en_text = en_future.result() if en_future else ""
+                    vi_text = vi_future.result() if vi_future else ""
+                    translation_info = f"\n🇨🇳 中文: {zh_text}\n🇬🇧 EN: {en_text}\n🇻🇳 Tiếng Việt: {vi_text}"
+                elif vi_future:
+                    vi_text = vi_future.result()
+                    if vi_text != detected_text or is_english:
+                        translation_info = f"\n🇻🇳 Tiếng Việt: {vi_text}"
+
+            # Step 6: Reply
+            line_bot_messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=f"🎙️ Kết quả nhận diện giọng nói:\n\n📝 Bé đọc: {detected_text}{zhuyin_info}{pinyin_info}{translation_info}"
+                        ),
+                        AudioMessage(original_content_url=audio_url, duration=5000)
+                    ]
+                )
+            )
+
+        except Exception as e:
+            print(f"❌ Voice Error: {e}")
+            traceback.print_exc()
+            line_bot_messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="Có lỗi xử lý giọng nói, hãy thử lại / Voice error.")]
+                )
+            )
+        finally:
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
 
 if __name__ == "__main__":
     if not os.path.exists('static'):
